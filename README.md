@@ -30,7 +30,7 @@ pip install requests beautifulsoup4
 3. 运行脚本
 
 ```bash
-python auto_sign.py
+python fnclub_signer.py
 ```
 
 ## 配置说明
@@ -65,7 +65,7 @@ class Config:
 crontab -e
 
 # 添加以下内容，设置每天上午8:30执行签到脚本
-30 8 * * * cd /path/to/script && python auto_sign.py
+30 8 * * * cd /path/to/script && python fnclub_signer.py
 ```
 
 ## 注意事项
