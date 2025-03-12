@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+import re
+import json
+import time
+import logging
 import requests
 from bs4 import BeautifulSoup
-import re
-import logging
-import os
-import time
 from datetime import datetime
 
 # 配置日志
@@ -23,209 +24,331 @@ logging.basicConfig(
     ]
 )
 
-class FNClubSigner:
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
+logger = logging.getLogger(__name__)
+
+# 配置信息
+class Config:
+    # 账号信息
+    USERNAME = 'your_username'
+    PASSWORD = 'your_password'
+    
+    # 网站URL
+    BASE_URL = 'https://club.fnnas.com/'
+    LOGIN_URL = BASE_URL + 'member.php?mod=logging&action=login'
+    SIGN_URL = BASE_URL + 'plugin.php?id=zqlj_sign'
+    
+    # Cookie文件路径
+    COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json')
+
+
+class FNSignIn:
+    def __init__(self):
         self.session = requests.Session()
-        self.base_url = 'https://club.fnnas.com/'
-        self.login_url = self.base_url + 'member.php?mod=logging&action=login'
-        self.sign_url = self.base_url + 'plugin.php?id=zqlj_sign'
-        
-        # 设置请求头，模拟浏览器访问
-        self.headers = {
+        self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-        self.session.headers.update(self.headers)
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        })
+        self.load_cookies()
     
-    def login(self):
-        """登录网站"""
-        logging.info(f"尝试使用账号 {self.username} 登录")
-        
+    def load_cookies(self):
+        """从文件加载Cookie"""
+        if os.path.exists(Config.COOKIE_FILE):
+            try:
+                with open(Config.COOKIE_FILE, 'r') as f:
+                    cookies = json.load(f)
+                    self.session.cookies.update(cookies)
+                logger.info("已从文件加载Cookie")
+                return True
+            except Exception as e:
+                logger.error(f"加载Cookie失败: {e}")
+        return False
+    
+    def save_cookies(self):
+        """保存Cookie到文件"""
         try:
-            # 获取登录页面，提取表单信息
-            response = self.session.get(self.login_url)
+            # 处理同名Cookie问题，创建一个新的字典，对于同名Cookie只保留最后一个
+            cookies_dict = {}
+            for cookie in self.session.cookies:
+                cookies_dict[cookie.name] = cookie.value
+            
+            with open(Config.COOKIE_FILE, 'w') as f:
+                json.dump(cookies_dict, f)
+            logger.info("Cookie已保存到文件")
+            return True
+        except Exception as e:
+            logger.error(f"保存Cookie失败: {e}")
+            return False
+    
+    def check_login_status(self):
+        """检查登录状态"""
+        try:
+            response = self.session.get(Config.BASE_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 提取formhash
-            formhash_input = soup.find('input', {'name': 'formhash'})
-            formhash = formhash_input['value'] if formhash_input else ''
+            # 检查是否有登录用户名显示
+            if soup.select('.vwmy'):
+                logger.info("Cookie有效，已登录状态")
+                return True
+            else:
+                logger.info("Cookie无效或已过期，需要重新登录")
+                return False
+        except Exception as e:
+            logger.error(f"检查登录状态失败: {e}")
+            return False
+    
+    def login(self):
+        """使用账号密码登录"""
+        try:
+            # 获取登录页面
+            response = self.session.get(Config.LOGIN_URL)
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 提取登录所需的其他参数
+            # 检查是否需要验证码
+            if 'seccodeverify' in response.text:
+                logger.error("登录需要验证码，请手动登录后再运行脚本")
+                return False
+            
+            # 获取登录表单信息
+            login_form = None
+            for form in soup.find_all('form'):
+                form_id = form.get('id', '')
+                if form_id and ('loginform' in form_id or 'lsform' in form_id):
+                    login_form = form
+                    break
+                elif form.get('name') == 'login':
+                    login_form = form
+                    break
+                elif form.get('action') and 'logging' in form.get('action'):
+                    login_form = form
+                    break
+            
+            if not login_form:
+                # 尝试查找任何表单，可能是登录表单
+                all_forms = soup.find_all('form')
+                if all_forms:
+                    login_form = all_forms[0]  # 使用第一个表单
+                    logger.info(f"使用备选表单: ID={login_form.get('id')}, Action={login_form.get('action')}")
+            
+            if not login_form:
+                logger.error("未找到登录表单")
+                return False
+                
+            # 提取登录表单ID中的随机部分
+            form_id = login_form.get('id', '')
+            login_hash = form_id.split('_')[-1] if '_' in form_id else ''
+            
+            # 获取登录表单的action属性
+            form_action = login_form.get('action', '')
+            logger.info(f"找到登录表单: ID={form_id}, Action={form_action}")
+            
+            # 获取表单字段
+            formhash = soup.find('input', {'name': 'formhash'})
+            if not formhash:
+                logger.error("未找到登录表单的formhash字段")
+                return False
+            
+            # 获取表单字段
+            formhash = formhash['value']
+            
+            # 获取用户名输入框ID
+            username_input = soup.find('input', {'name': 'username'})
+            username_id = username_input.get('id', '') if username_input else ''
+            
+            # 获取密码输入框ID
+            password_input = soup.find('input', {'name': 'password'})
+            password_id = password_input.get('id', '') if password_input else ''
+            
+            logger.info(f"找到用户名输入框ID: {username_id}")
+            logger.info(f"找到密码输入框ID: {password_id}")
+            
+            # 构建登录数据
             login_data = {
                 'formhash': formhash,
-                'referer': self.base_url,
+                'referer': Config.BASE_URL,
                 'loginfield': 'username',
-                'username': self.username,
-                'password': self.password,
+                'username': Config.USERNAME,
+                'password': Config.PASSWORD,
                 'questionid': '0',
                 'answer': '',
+                'cookietime': '2592000',  # 保持登录状态30天
                 'loginsubmit': 'true'
             }
             
-            # 提交登录请求
-            login_response = self.session.post(self.login_url + '&loginsubmit=yes&handlekey=login&loginhash=LuS9h', data=login_data)
+            # 添加特定的表单字段
+            if username_id:
+                login_data[username_id] = Config.USERNAME
+            if password_id:
+                login_data[password_id] = Config.PASSWORD
             
-            # 检查登录是否成功（修改检查逻辑）
-            if '欢迎您回来' in login_response.text or '退出' in login_response.text:
-                logging.info("登录成功")
+            # 更新请求头，模拟真实浏览器
+            self.session.headers.update({
+                'Origin': Config.BASE_URL.rstrip('/'),
+                'Referer': Config.LOGIN_URL,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Upgrade-Insecure-Requests': '1'
+            })
+            
+            # 构建登录URL
+            login_url = f"{Config.LOGIN_URL}&loginsubmit=yes&inajax=1"
+            
+            # 发送登录请求
+            login_response = self.session.post(login_url, data=login_data, allow_redirects=True)
+            
+            # 检查登录结果
+            if '验证码' in login_response.text:
+                logger.error("登录需要验证码，请手动登录后再运行脚本")
+                return False
+            
+            # 检查登录是否成功
+            if 'succeedhandle_' in login_response.text or self.check_login_status():
+                logger.info(f"账号 {Config.USERNAME} 登录成功")
+                self.save_cookies()
                 return True
             else:
-                logging.error("登录失败，请检查账号密码")
+                logger.error("登录失败，请检查账号密码")
+                logger.debug(f"登录响应: {login_response.text}")
                 return False
-                
         except Exception as e:
-            logging.error(f"登录过程出错: {str(e)}")
+            logger.error(f"登录过程发生错误: {e}")
             return False
     
     def check_sign_status(self):
-        """检查签到状态，返回是否已签到和sign参数"""
+        """检查签到状态"""
         try:
-            response = self.session.get(self.sign_url)
+            response = self.session.get(Config.SIGN_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # 查找签到按钮
-            sign_div = soup.find('div', {'class': 'bm signbtn cl'})
-            if not sign_div:
-                logging.error("未找到签到按钮")
+            sign_btn = soup.select_one('.signbtn .btna')
+            if not sign_btn:
+                logger.error("未找到签到按钮")
                 return None, None
             
-            sign_link = sign_div.find('a')
-            if not sign_link:
-                logging.error("未找到签到链接")
-                return None, None
+            # 获取签到链接和状态
+            sign_text = sign_btn.text.strip()
+            sign_link = sign_btn.get('href')
             
             # 提取sign参数
-            sign_href = sign_link.get('href', '')
-            sign_match = re.search(r'sign=([0-9a-f]+)', sign_href)
-            sign_param = sign_match.group(1) if sign_match else None
+            sign_param = None
+            if sign_link:
+                match = re.search(r'sign=([^&]+)', sign_link)
+                if match:
+                    sign_param = match.group(1)
             
-            # 判断是否已签到
-            is_signed = '今日已打卡' in sign_link.text
-            
-            return is_signed, sign_param
-            
+            return sign_text, sign_param
         except Exception as e:
-            logging.error(f"检查签到状态出错: {str(e)}")
+            logger.error(f"检查签到状态失败: {e}")
             return None, None
     
     def do_sign(self, sign_param):
-        """执行签到操作"""
-        if not sign_param:
-            logging.error("签到参数为空，无法签到")
-            return False
-        
+        """执行签到"""
         try:
-            sign_url_with_param = f"{self.sign_url}&sign={sign_param}"
-            response = self.session.get(sign_url_with_param)
+            sign_url = f"{Config.SIGN_URL}&sign={sign_param}"
+            response = self.session.get(sign_url)
             
-            # 检查签到是否成功
-            if '打卡成功' in response.text or '今日已打卡' in response.text:
-                logging.info("签到成功")
-                return True
+            # 检查签到结果
+            if response.status_code == 200:
+                # 再次检查签到状态
+                sign_text, _ = self.check_sign_status()
+                if sign_text == "今日已打卡":
+                    logger.info("签到成功")
+                    return True
+                else:
+                    logger.error("签到请求已发送，但状态未更新")
+                    return False
             else:
-                logging.error("签到失败")
+                logger.error(f"签到请求失败，状态码: {response.status_code}")
                 return False
-                
         except Exception as e:
-            logging.error(f"签到过程出错: {str(e)}")
+            logger.error(f"签到过程发生错误: {e}")
             return False
     
     def get_sign_info(self):
         """获取签到信息"""
         try:
-            response = self.session.get(self.sign_url)
+            response = self.session.get(Config.SIGN_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # 查找签到信息区域
-            info_divs = soup.find_all('div', {'class': 'bm'})
-            info_div = None
-            for div in info_divs:
-                strong_tag = div.find('strong')
-                if strong_tag and '我的打卡动态' in strong_tag.text:
-                    info_div = div.find('div', {'class': 'bm_c'})
+            sign_info_divs = soup.find_all('div', class_='bm')
+            sign_info_div = None
+            for div in sign_info_divs:
+                header = div.find('div', class_='bm_h')
+                if header and '我的打卡动态' in header.get_text():
+                    sign_info_div = div
                     break
             
-            if not info_div:
-                logging.error("未找到签到信息区域")
+            if not sign_info_div:
+                logger.error("未找到签到信息区域")
                 return {}
             
-            # 提取签到信息
-            info_items = info_div.find_all('li')
+            # 查找签到信息列表
+            info_list = sign_info_div.find('div', class_='bm_c').find_all('li')
+            
+            # 解析签到信息
             sign_info = {}
-            
-            for item in info_items:
-                if '：' in item.text:
-                    key, value = item.text.split('：', 1)
-                    sign_info[key] = value.strip()
-            
-            # 记录详细的签到信息
-            if sign_info:
-                logging.info("获取到的详细签到信息:")
-                for key, value in sign_info.items():
-                    logging.info(f"{key}：{value}")
+            for item in info_list:
+                text = item.get_text(strip=True)
+                if '：' in text:
+                    key, value = text.split('：', 1)
+                    sign_info[key] = value
             
             return sign_info
-            
         except Exception as e:
-            logging.error(f"获取签到信息出错: {str(e)}")
+            logger.error(f"获取签到信息失败: {e}")
             return {}
     
     def run(self):
         """运行签到流程"""
-        # 登录
-        if not self.login():
-            return False
+        logger.info("===== 开始运行签到脚本 =====")
+        
+        # 检查登录状态
+        if not self.check_login_status():
+            # 如果未登录，尝试登录
+            if not self.login():
+                logger.error("登录失败，签到流程终止")
+                return False
         
         # 检查签到状态
-        is_signed, sign_param = self.check_sign_status()
-        
-        if is_signed is None:
-            logging.error("无法获取签到状态")
+        sign_text, sign_param = self.check_sign_status()
+        if sign_text is None or sign_param is None:
+            logger.error("获取签到状态失败，签到流程终止")
             return False
         
-        # 如果未签到，则执行签到
-        if not is_signed:
-            logging.info("今日未签到，准备签到")
-            if not self.do_sign(sign_param):
-                return False
-        else:
-            logging.info("今日已签到，无需重复签到")
+        logger.info(f"当前签到状态: {sign_text}")
         
-        # 获取并记录签到信息
-        sign_info = self.get_sign_info()
-        if sign_info:
-            logging.info("签到信息获取成功:")
-            for key, value in sign_info.items():
-                logging.info(f"{key}: {value}")
-        
-        return True
-
-def main():
-    # 从环境变量或配置文件获取账号密码
-    username = os.environ.get('FNCLUB_USERNAME', '账号')  # 默认账号
-    password = os.environ.get('FNCLUB_PASSWORD', '密码')  # 默认密码
-    
-    # 创建签到器并运行
-    signer = FNClubSigner(username, password)
-    
-    # 添加重试机制
-    max_retries = 3
-    for i in range(max_retries):
-        logging.info(f"第 {i+1} 次尝试签到")
-        if signer.run():
-            break
-        else:
-            if i < max_retries - 1:
-                wait_time = 5 * (i + 1)  # 递增等待时间
-                logging.info(f"签到失败，{wait_time}秒后重试...")
-                time.sleep(wait_time)
+        # 如果未签到，执行签到
+        if sign_text == "点击打卡":
+            logger.info("开始执行签到...")
+            if self.do_sign(sign_param):
+                # 获取并记录签到信息
+                sign_info = self.get_sign_info()
+                if sign_info:
+                    logger.info("===== 签到信息 =====")
+                    for key, value in sign_info.items():
+                        logger.info(f"{key}: {value}")
+                return True
             else:
-                logging.error("达到最大重试次数，签到失败")
+                logger.error("签到失败")
+                return False
+        elif sign_text == "今日已打卡":
+            logger.info("今日已签到，无需重复签到")
+            # 获取并记录签到信息
+            sign_info = self.get_sign_info()
+            if sign_info:
+                logger.info("===== 签到信息 =====")
+                for key, value in sign_info.items():
+                    logger.info(f"{key}: {value}")
+            return True
+        else:
+            logger.warning(f"未知的签到状态: {sign_text}，签到流程终止")
+            return False
 
-if __name__ == '__main__':
-    main()
+
+if __name__ == "__main__":
+    try:
+        sign = FNSignIn()
+        sign.run()
+    except Exception as e:
+        logger.error(f"脚本运行出错: {e}")
