@@ -26,8 +26,10 @@ pip install requests beautifulsoup4
 ## 使用方法
 
 1. 确保已安装所需依赖
-2. 修改脚本中的账号密码（如需要）
+2. 修改脚本中的账号密码（32-33行代码）
 3. 运行脚本
+4. 如提示需要验证码，可多次登陆试下
+   (确定账号密码没有错误时，常用IP会跳过验证码)
 
 ```bash
 python fnclub_signer.py
