@@ -385,22 +385,22 @@ class FNSignIn:
                             time.sleep(Config.RETRY_DELAY)
                             continue
                         return False
-                
-                captcha_url = Config.BASE_URL + captcha_img['src']
-                logger.info(f"验证码图片URL: {captcha_url}")
-                
-                # 识别验证码
-                captcha_text = self.recognize_captcha(captcha_url)
-                if not captcha_text:
-                    logger.error(f"验证码识别失败，重试({retry+1}/{Config.MAX_RETRIES})")
-                    if retry < Config.MAX_RETRIES - 1:
-                        time.sleep(Config.RETRY_DELAY)
-                        continue
-                    return False
-                
-                # 添加验证码到登录数据
-                login_data['seccodeverify'] = captcha_text
-                login_data['seccodehash'] = seccode_id
+                    
+                    captcha_url = Config.BASE_URL + captcha_img['src']
+                    logger.info(f"验证码图片URL: {captcha_url}")
+                    
+                    # 识别验证码
+                    captcha_text = self.recognize_captcha(captcha_url)
+                    if not captcha_text:
+                        logger.error(f"验证码识别失败，重试({retry+1}/{Config.MAX_RETRIES})")
+                        if retry < Config.MAX_RETRIES - 1:
+                            time.sleep(Config.RETRY_DELAY)
+                            continue
+                        return False
+                    
+                    # 添加验证码到登录数据
+                    login_data['seccodeverify'] = captcha_text
+                    login_data['seccodehash'] = seccode_id
             
                 # 更新请求头，模拟真实浏览器
                 self.session.headers.update({
@@ -415,6 +415,12 @@ class FNSignIn:
                 
                 # 发送登录请求
                 login_response = self.session.post(login_url, data=login_data, allow_redirects=True)
+                
+                # 添加更多调试信息
+                logger.debug(f"登录请求URL: {login_url}")
+                logger.debug(f"登录请求数据: {login_data}")
+                logger.debug(f"登录响应状态码: {login_response.status_code}")
+                logger.debug(f"登录响应内容: {login_response.text[:500]}...")
                 
                 # 检查登录结果
                 if '验证码' in login_response.text and '验证码错误' in login_response.text:
