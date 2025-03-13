@@ -12,8 +12,9 @@
 - 自动执行签到操作
 - 获取并记录签到信息（最近签到时间、本月签到天数、连续签到天数等）
 - 保存Cookie到本地，下次运行时优先使用Cookie登录
-- 验证码检测功能，当需要验证码时会提示用户手动登录
+- 验证码自动识别功能，使用百度OCR API识别验证码
 - 详细的日志记录
+- 完善的错误处理和重试机制
 
 ## 依赖安装
 
@@ -26,17 +27,12 @@ pip install requests beautifulsoup4
 ## 使用方法
 
 1. 确保已安装所需依赖
-2. 修改脚本中的账号密码（32-33行代码）
-3. 运行脚本
-4. 如提示需要验证码，可多次登陆试下(尝试添加了识别API，)
-   (确定账号密码没有错误时，常用IP会跳过验证码)
-
-注册地址：https://share.acedata.cloud/r/1uKi7kVhwW
-
-识别项目地址：https://platform.acedata.cloud/documents/cd1f56dc-e9c9-4293-9c68-80fa560c9087
+2. 修改脚本中的账号密码（Config类中的USERNAME和PASSWORD）
+3. 配置百度OCR API的API_KEY和SECRET_KEY（如需使用验证码识别功能）
+4. 运行脚本
 
 ```bash
-python fnclub_signer.py
+python auto_sign.py
 ```
 
 ## 配置说明
@@ -57,14 +53,39 @@ class Config:
     # Cookie文件路径
     COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json')
     
-    # 验证码识别API
-    CAPTCHA_API_URL = "https://api.acedata.cloud/captcha/recognition/image2text"
-    CAPTCHA_API_KEY = "Bearer your_api_key"  # 替换为你的API密钥
+    # 验证码识别API (百度OCR API)
+    CAPTCHA_API_URL = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
+    API_KEY = "your_api_key"  # 替换为你的百度OCR API Key
+    SECRET_KEY = "your_secret_key"  # 替换为你的百度OCR Secret Key
+    
+    # 重试设置
+    MAX_RETRIES = 3  # 最大重试次数
+    RETRY_DELAY = 2  # 重试间隔(秒)
+    
+    # Token缓存文件
+    TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token_cache.json')
 ```
+
+### 百度OCR API配置
+
+1. 访问[百度AI开放平台](https://ai.baidu.com/)注册账号
+2. 创建文字识别应用，获取API Key和Secret Key
+3. 将获取到的API Key和Secret Key填入Config类中的对应位置
 
 ## 日志说明
 
 脚本会在同目录下创建`logs`文件夹，并生成格式为`sign_YYYYMMDD.log`的日志文件，记录签到过程中的各种信息。
+
+可以通过设置环境变量启用调试模式：
+
+```bash
+# Windows
+set DEBUG=1
+python auto_sign.py
+
+# Linux/Mac
+DEBUG=1 python auto_sign.py
+```
 
 ## 自动化部署
 
@@ -75,22 +96,36 @@ class Config:
 crontab -e
 
 # 添加以下内容，设置每天上午8:30执行签到脚本
-30 8 * * * cd /path/to/script && python fnclub_signer.py
+30 8 * * * cd /path/to/script && python auto_sign.py
 ```
+
+对于Windows系统，可以使用计划任务：
+
+1. 打开任务计划程序
+2. 创建基本任务
+3. 设置每天运行，并指定时间
+4. 选择启动程序，并设置为python脚本路径
 
 ## 注意事项
 
 1. 请勿频繁运行脚本，以免对网站造成不必要的压力
-2. 如遇到验证码，脚本会自动尝试识别验证码并登录
-3. 首次运行时会创建Cookie文件，之后会优先使用Cookie登录
-4. 如Cookie失效，脚本会自动尝试使用账号密码重新登录
-5. 验证码识别功能需要配置有效的API密钥才能使用
+2. 首次运行时会创建Cookie文件，之后会优先使用Cookie登录
+3. 如Cookie失效，脚本会自动尝试使用账号密码重新登录
+4. 验证码识别功能需要配置有效的百度OCR API密钥才能使用
+5. 脚本内置了重试机制，可以自动处理临时性错误
 
 ## 免责声明
 
 本脚本仅供学习交流使用，请勿用于任何商业用途。使用本脚本产生的任何后果由使用者自行承担。
 
 ## 更新日志
+
+### 2023.03.15 - 重试机制与验证码识别优化
+- 添加了完善的重试机制，提高脚本稳定性
+- 优化了百度OCR API的集成，实现验证码自动识别
+- 添加了access_token缓存功能，减少API调用次数
+- 改进了错误处理和日志记录
+- 添加了调试模式支持
 
 ### 登录功能优化
 - 优化了登录表单的查找逻辑，支持多种表单ID格式
@@ -113,8 +148,9 @@ crontab -e
 - 优化了异常情况的处理流程
 
 ### 验证码识别功能
-- 在Config类中添加了CAPTCHA_API_URL和CAPTCHA_API_KEY配置项
+- 在Config类中添加了百度OCR API相关配置
 - 实现了recognize_captcha方法，用于下载验证码图片、转换为Base64编码并调用API识别
+- 添加了验证码文本清理功能，提高识别准确率
 - 该方法会返回识别出的验证码文本或在失败时返回None
 
 ### 登录流程优化
