@@ -8,6 +8,7 @@ import time
 import logging
 import requests
 import base64
+import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -41,10 +42,17 @@ class Config:
     # Cookie文件路径
     COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json')
     
-    # 验证码识别API
-    CAPTCHA_API_URL = "https://api.acedata.cloud/captcha/recognition/image2text"
-    CAPTCHA_API_KEY = "Bearer your_api_key"  # 替换为你的API密钥
-    # API注册地址：https://share.acedata.cloud/r/1uKi7kVhwW
+    # 验证码识别API (百度OCR API)
+    CAPTCHA_API_URL = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
+    API_KEY = "your_api_key"  # 替换为你的百度OCR API Key
+    SECRET_KEY = "your_secret_key"  # 替换为你的百度OCR Secret Key
+    
+    # 重试设置
+    MAX_RETRIES = 3  # 最大重试次数
+    RETRY_DELAY = 2  # 重试间隔(秒)
+    
+    # Token缓存文件
+    TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token_cache.json')
 
 class FNSignIn:
     def __init__(self):
@@ -136,139 +144,247 @@ class FNSignIn:
             logger.error(f"检查登录状态失败: {e}")
             return False
     
-    def recognize_captcha(self, captcha_url):
-        """识别验证码"""
+    def get_access_token(self):
+        """获取百度API的access_token，带缓存功能"""
         try:
-            # 下载验证码图片
-            captcha_response = self.session.get(captcha_url)
-            if captcha_response.status_code != 200:
-                logger.error(f"下载验证码图片失败，状态码: {captcha_response.status_code}")
-                return None
+            # 检查是否有缓存的token
+            if os.path.exists(Config.TOKEN_CACHE_FILE):
+                try:
+                    with open(Config.TOKEN_CACHE_FILE, 'r') as f:
+                        token_data = json.load(f)
+                        # 检查token是否过期（百度token有效期为30天）
+                        if token_data.get('expires_time', 0) > time.time():
+                            logger.info("使用缓存的access_token")
+                            return token_data.get('access_token')
+                        else:
+                            logger.info("缓存的access_token已过期，重新获取")
+                except Exception as e:
+                    logger.warning(f"读取token缓存文件失败: {e}")
             
-            # 将图片转换为Base64编码
-            captcha_base64 = base64.b64encode(captcha_response.content).decode('utf-8')
-            
-            # 调用验证码识别API
-            headers = {
-                "accept": "application/json",
-                "authorization": Config.CAPTCHA_API_KEY,
-                "content-type": "application/json"
+            # 获取新token
+            url = "https://aip.baidubce.com/oauth/2.0/token"
+            params = {
+                "grant_type": "client_credentials", 
+                "client_id": Config.API_KEY, 
+                "client_secret": Config.SECRET_KEY
             }
             
-            payload = {
-                "image": captcha_base64
-            }
+            # 添加重试机制
+            for retry in range(Config.MAX_RETRIES):
+                try:
+                    response = requests.post(url, params=params)
+                    if response.status_code == 200:
+                        result = response.json()
+                        access_token = str(result.get("access_token"))
+                        expires_in = result.get("expires_in", 2592000)  # 默认30天
+                        
+                        # 缓存token
+                        token_cache = {
+                            'access_token': access_token,
+                            'expires_time': time.time() + expires_in - 86400  # 提前一天过期
+                        }
+                        try:
+                            with open(Config.TOKEN_CACHE_FILE, 'w') as f:
+                                json.dump(token_cache, f)
+                            logger.info("access_token已缓存")
+                        except Exception as e:
+                            logger.warning(f"缓存access_token失败: {e}")
+                        
+                        return access_token
+                    else:
+                        logger.error(f"获取access_token失败，状态码: {response.status_code}，重试({retry+1}/{Config.MAX_RETRIES})")
+                        if retry < Config.MAX_RETRIES - 1:
+                            time.sleep(Config.RETRY_DELAY)
+                except Exception as e:
+                    logger.error(f"获取access_token请求异常: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
             
-            api_response = requests.post(Config.CAPTCHA_API_URL, json=payload, headers=headers)
-            
-            if api_response.status_code != 200:
-                logger.error(f"验证码识别API请求失败，状态码: {api_response.status_code}")
-                return None
-            
-            # 解析API响应
-            result = api_response.json()
-            if 'text' in result:
-                logger.info(f"验证码识别成功: {result['text']}")
-                return result['text']
-            else:
-                logger.error(f"验证码识别API返回格式异常: {result}")
-                return None
+            logger.error(f"获取access_token失败，已达到最大重试次数({Config.MAX_RETRIES})")
+            return None
         except Exception as e:
-            logger.error(f"验证码识别过程发生错误: {e}")
+            logger.error(f"获取access_token过程发生错误: {e}")
             return None
     
+    def recognize_captcha(self, captcha_url):
+        """识别验证码，带重试机制"""
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                # 下载验证码图片
+                captcha_response = self.session.get(captcha_url)
+                if captcha_response.status_code != 200:
+                    logger.error(f"下载验证码图片失败，状态码: {captcha_response.status_code}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None
+                
+                # 将图片转换为Base64编码
+                captcha_base64 = base64.b64encode(captcha_response.content).decode('utf-8')
+                
+                # 获取access_token
+                access_token = self.get_access_token()
+                if not access_token:
+                    logger.error(f"获取百度API access_token失败，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None
+                    
+                # 构建API请求URL
+                url = f"{Config.CAPTCHA_API_URL}?access_token={access_token}"
+                
+                # 构建请求参数
+                payload = f'image={urllib.parse.quote_plus(captcha_base64)}&detect_direction=false&paragraph=false&probability=false'
+                
+                # 设置请求头
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json'
+                }
+                
+                # 发送请求
+                api_response = requests.request("POST", url, headers=headers, data=payload.encode("utf-8"))
+                
+                if api_response.status_code != 200:
+                    logger.error(f"验证码识别API请求失败，状态码: {api_response.status_code}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None
+                
+                # 解析API响应
+                result = api_response.json()
+                if 'words_result' in result and len(result['words_result']) > 0:
+                    captcha_text = result['words_result'][0]['words']
+                    # 清理验证码文本，移除空格和特殊字符
+                    captcha_text = re.sub(r'[\s\W]+', '', captcha_text)
+                    logger.info(f"验证码识别成功: {captcha_text}")
+                    return captcha_text
+                elif 'error_code' in result:
+                    logger.error(f"验证码识别API返回错误: {result.get('error_code')}, {result.get('error_msg')}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None
+                else:
+                    logger.error(f"验证码识别API返回格式异常: {result}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None
+            except Exception as e:
+                logger.error(f"验证码识别过程发生错误: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                if retry < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
+                return None
+        
+        logger.error(f"验证码识别失败，已达到最大重试次数({Config.MAX_RETRIES})")
+        return None
+    
     def login(self):
-        """使用账号密码登录"""
-        try:
-            # 获取登录页面
-            response = self.session.get(Config.LOGIN_URL)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 获取登录表单信息
-            login_form = None
-            for form in soup.find_all('form'):
-                form_id = form.get('id', '')
-                if form_id and ('loginform' in form_id or 'lsform' in form_id):
-                    login_form = form
-                    break
-                elif form.get('name') == 'login':
-                    login_form = form
-                    break
-                elif form.get('action') and 'logging' in form.get('action'):
-                    login_form = form
-                    break
-            
-            if not login_form:
-                # 尝试查找任何表单，可能是登录表单
-                all_forms = soup.find_all('form')
-                if all_forms:
-                    login_form = all_forms[0]  # 使用第一个表单
-                    logger.info(f"使用备选表单: ID={login_form.get('id')}, Action={login_form.get('action')}")
-            
-            if not login_form:
-                logger.error("未找到登录表单")
-                return False
+        """使用账号密码登录，带重试机制"""
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                # 获取登录页面
+                response = self.session.get(Config.LOGIN_URL)
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-            # 提取登录表单ID中的随机部分
-            form_id = login_form.get('id', '')
-            login_hash = form_id.split('_')[-1] if '_' in form_id else ''
-            
-            # 获取登录表单的action属性
-            form_action = login_form.get('action', '')
-            logger.info(f"找到登录表单: ID={form_id}, Action={form_action}")
-            
-            # 获取表单字段
-            formhash = soup.find('input', {'name': 'formhash'})
-            if not formhash:
-                logger.error("未找到登录表单的formhash字段")
-                return False
-            
-            # 获取表单字段
-            formhash = formhash['value']
-            
-            # 获取用户名输入框ID
-            username_input = soup.find('input', {'name': 'username'})
-            username_id = username_input.get('id', '') if username_input else ''
-            
-            # 获取密码输入框ID
-            password_input = soup.find('input', {'name': 'password'})
-            password_id = password_input.get('id', '') if password_input else ''
-            
-            logger.info(f"找到用户名输入框ID: {username_id}")
-            logger.info(f"找到密码输入框ID: {password_id}")
-            
-            # 构建登录数据
-            login_data = {
-                'formhash': formhash,
-                'referer': Config.BASE_URL,
-                'loginfield': 'username',
-                'username': Config.USERNAME,
-                'password': Config.PASSWORD,
-                'questionid': '0',
-                'answer': '',
-                'cookietime': '2592000',  # 保持登录状态30天
-                'loginsubmit': 'true'
-            }
-            
-            # 添加特定的表单字段
-            if username_id:
-                login_data[username_id] = Config.USERNAME
-            if password_id:
-                login_data[password_id] = Config.PASSWORD
-            
-            # 检查是否需要验证码
-            seccodeverify = soup.find('input', {'name': 'seccodeverify'})
-            if seccodeverify:
-                logger.info("检测到需要验证码，尝试自动识别验证码")
+                # 获取登录表单信息
+                login_form = None
+                for form in soup.find_all('form'):
+                    form_id = form.get('id', '')
+                    if form_id and ('loginform' in form_id or 'lsform' in form_id):
+                        login_form = form
+                        break
+                    elif form.get('name') == 'login':
+                        login_form = form
+                        break
+                    elif form.get('action') and 'logging' in form.get('action'):
+                        login_form = form
+                        break
                 
-                # 获取验证码ID
-                seccode_id = seccodeverify.get('id', '').replace('seccodeverify_', '')
+                if not login_form:
+                    # 尝试查找任何表单，可能是登录表单
+                    all_forms = soup.find_all('form')
+                    if all_forms:
+                        login_form = all_forms[0]  # 使用第一个表单
+                        logger.info(f"使用备选表单: ID={login_form.get('id')}, Action={login_form.get('action')}")
                 
-                # 获取验证码图片URL
-                captcha_img = soup.find('img', {'src': re.compile(r'misc\.php\?mod=seccode')})
-                if not captcha_img:
-                    logger.error("未找到验证码图片")
+                if not login_form:
+                    logger.error(f"未找到登录表单，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
                     return False
+                    
+                # 提取登录表单ID中的随机部分
+                form_id = login_form.get('id', '')
+                login_hash = form_id.split('_')[-1] if '_' in form_id else ''
+                
+                # 获取登录表单的action属性
+                form_action = login_form.get('action', '')
+                logger.info(f"找到登录表单: ID={form_id}, Action={form_action}")
+                
+                # 获取表单字段
+                formhash = soup.find('input', {'name': 'formhash'})
+                if not formhash:
+                    logger.error(f"未找到登录表单的formhash字段，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return False
+                
+                # 获取表单字段
+                formhash = formhash['value']
+                
+                # 获取用户名输入框ID
+                username_input = soup.find('input', {'name': 'username'})
+                username_id = username_input.get('id', '') if username_input else ''
+                
+                # 获取密码输入框ID
+                password_input = soup.find('input', {'name': 'password'})
+                password_id = password_input.get('id', '') if password_input else ''
+                
+                logger.info(f"找到用户名输入框ID: {username_id}")
+                logger.info(f"找到密码输入框ID: {password_id}")
+                
+                # 构建登录数据
+                login_data = {
+                    'formhash': formhash,
+                    'referer': Config.BASE_URL,
+                    'loginfield': 'username',
+                    'username': Config.USERNAME,
+                    'password': Config.PASSWORD,
+                    'questionid': '0',
+                    'answer': '',
+                    'cookietime': '2592000',  # 保持登录状态30天
+                    'loginsubmit': 'true'
+                }
+                
+                # 添加特定的表单字段
+                if username_id:
+                    login_data[username_id] = Config.USERNAME
+                if password_id:
+                    login_data[password_id] = Config.PASSWORD
+                
+                # 检查是否需要验证码
+                seccodeverify = soup.find('input', {'name': 'seccodeverify'})
+                if seccodeverify:
+                    logger.info("检测到需要验证码，尝试自动识别验证码")
+                    
+                    # 获取验证码ID
+                    seccode_id = seccodeverify.get('id', '').replace('seccodeverify_', '')
+                    
+                    # 获取验证码图片URL
+                    captcha_img = soup.find('img', {'src': re.compile(r'misc\.php\?mod=seccode')})
+                    if not captcha_img:
+                        logger.error(f"未找到验证码图片，重试({retry+1}/{Config.MAX_RETRIES})")
+                        if retry < Config.MAX_RETRIES - 1:
+                            time.sleep(Config.RETRY_DELAY)
+                            continue
+                        return False
                 
                 captcha_url = Config.BASE_URL + captcha_img['src']
                 logger.info(f"验证码图片URL: {captcha_url}")
@@ -276,133 +392,175 @@ class FNSignIn:
                 # 识别验证码
                 captcha_text = self.recognize_captcha(captcha_url)
                 if not captcha_text:
-                    logger.error("验证码识别失败")
+                    logger.error(f"验证码识别失败，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
                     return False
                 
                 # 添加验证码到登录数据
                 login_data['seccodeverify'] = captcha_text
                 login_data['seccodehash'] = seccode_id
             
-            # 更新请求头，模拟真实浏览器
-            self.session.headers.update({
-                'Origin': Config.BASE_URL.rstrip('/'),
-                'Referer': Config.LOGIN_URL,
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Upgrade-Insecure-Requests': '1'
-            })
-            
-            # 构建登录URL
-            login_url = f"{Config.LOGIN_URL}&loginsubmit=yes&inajax=1"
-            
-            # 发送登录请求
-            login_response = self.session.post(login_url, data=login_data, allow_redirects=True)
-            
-            # 检查登录结果
-            if '验证码' in login_response.text and '验证码错误' in login_response.text:
-                logger.error("验证码错误，登录失败")
-                return False
-            
-            # 检查登录是否成功
-            if 'succeedhandle_' in login_response.text or self.check_login_status():
-                logger.info(f"账号 {Config.USERNAME} 登录成功")
-                self.save_cookies()
-                return True
-            else:
-                logger.error("登录失败，请检查账号密码")
-                logger.debug(f"登录响应: {login_response.text}")
-                return False
-        except Exception as e:
-            logger.error(f"登录过程发生错误: {e}")
-            return False
-    
-    def check_sign_status(self):
-        """检查签到状态"""
-        try:
-            response = self.session.get(Config.SIGN_URL)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 查找签到按钮
-            sign_btn = soup.select_one('.signbtn .btna')
-            if not sign_btn:
-                logger.error("未找到签到按钮")
-                return None, None
-            
-            # 获取签到链接和状态
-            sign_text = sign_btn.text.strip()
-            sign_link = sign_btn.get('href')
-            
-            # 提取sign参数
-            sign_param = None
-            if sign_link:
-                match = re.search(r'sign=([^&]+)', sign_link)
-                if match:
-                    sign_param = match.group(1)
-            
-            return sign_text, sign_param
-        except Exception as e:
-            logger.error(f"检查签到状态失败: {e}")
-            return None, None
-    
-    def do_sign(self, sign_param):
-        """执行签到"""
-        try:
-            sign_url = f"{Config.SIGN_URL}&sign={sign_param}"
-            response = self.session.get(sign_url)
-            
-            # 检查签到结果
-            if response.status_code == 200:
-                # 再次检查签到状态
-                sign_text, _ = self.check_sign_status()
-                if sign_text == "今日已打卡":
-                    logger.info("签到成功")
+                # 更新请求头，模拟真实浏览器
+                self.session.headers.update({
+                    'Origin': Config.BASE_URL.rstrip('/'),
+                    'Referer': Config.LOGIN_URL,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Upgrade-Insecure-Requests': '1'
+                })
+                
+                # 构建登录URL
+                login_url = f"{Config.LOGIN_URL}&loginsubmit=yes&inajax=1"
+                
+                # 发送登录请求
+                login_response = self.session.post(login_url, data=login_data, allow_redirects=True)
+                
+                # 检查登录结果
+                if '验证码' in login_response.text and '验证码错误' in login_response.text:
+                    logger.error(f"验证码错误，登录失败，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return False
+                
+                # 检查登录是否成功
+                if 'succeedhandle_' in login_response.text or self.check_login_status():
+                    logger.info(f"账号 {Config.USERNAME} 登录成功")
+                    self.save_cookies()
                     return True
                 else:
-                    logger.error("签到请求已发送，但状态未更新")
+                    logger.error(f"登录失败，请检查账号密码，重试({retry+1}/{Config.MAX_RETRIES})")
+                    logger.debug(f"登录响应: {login_response.text[:200]}...")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
                     return False
-            else:
-                logger.error(f"签到请求失败，状态码: {response.status_code}")
+            except Exception as e:
+                logger.error(f"登录过程发生错误: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                if retry < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
                 return False
-        except Exception as e:
-            logger.error(f"签到过程发生错误: {e}")
-            return False
+        
+        logger.error(f"登录失败，已达到最大重试次数({Config.MAX_RETRIES})")
+        return False
+    
+    def check_sign_status(self):
+        """检查签到状态，带重试机制"""
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                response = self.session.get(Config.SIGN_URL)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 查找签到按钮
+                sign_btn = soup.select_one('.signbtn .btna')
+                if not sign_btn:
+                    logger.error(f"未找到签到按钮，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return None, None
+                
+                # 获取签到链接和状态
+                sign_text = sign_btn.text.strip()
+                sign_link = sign_btn.get('href')
+                
+                # 提取sign参数
+                sign_param = None
+                if sign_link:
+                    match = re.search(r'sign=([^&]+)', sign_link)
+                    if match:
+                        sign_param = match.group(1)
+                
+                return sign_text, sign_param
+            except Exception as e:
+                logger.error(f"检查签到状态失败: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                if retry < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
+                return None, None
+    
+    def do_sign(self, sign_param):
+        """执行签到，带重试机制"""
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                sign_url = f"{Config.SIGN_URL}&sign={sign_param}"
+                response = self.session.get(sign_url)
+                
+                # 检查签到结果
+                if response.status_code == 200:
+                    # 再次检查签到状态
+                    sign_text, _ = self.check_sign_status()
+                    if sign_text == "今日已打卡":
+                        logger.info("签到成功")
+                        return True
+                    else:
+                        logger.error(f"签到请求已发送，但状态未更新，重试({retry+1}/{Config.MAX_RETRIES})")
+                        if retry < Config.MAX_RETRIES - 1:
+                            time.sleep(Config.RETRY_DELAY)
+                            continue
+                        return False
+                else:
+                    logger.error(f"签到请求失败，状态码: {response.status_code}，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return False
+            except Exception as e:
+                logger.error(f"签到过程发生错误: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                if retry < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
+                return False
     
     def get_sign_info(self):
-        """获取签到信息"""
-        try:
-            response = self.session.get(Config.SIGN_URL)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 查找签到信息区域
-            sign_info_divs = soup.find_all('div', class_='bm')
-            sign_info_div = None
-            for div in sign_info_divs:
-                header = div.find('div', class_='bm_h')
-                if header and '我的打卡动态' in header.get_text():
-                    sign_info_div = div
-                    break
-            
-            if not sign_info_div:
-                logger.error("未找到签到信息区域")
+        """获取签到信息，带重试机制"""
+        for retry in range(Config.MAX_RETRIES):
+            try:
+                response = self.session.get(Config.SIGN_URL)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 查找签到信息区域
+                sign_info_divs = soup.find_all('div', class_='bm')
+                sign_info_div = None
+                for div in sign_info_divs:
+                    header = div.find('div', class_='bm_h')
+                    if header and '我的打卡动态' in header.get_text():
+                        sign_info_div = div
+                        break
+                
+                if not sign_info_div:
+                    logger.error(f"未找到签到信息区域，重试({retry+1}/{Config.MAX_RETRIES})")
+                    if retry < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY)
+                        continue
+                    return {}
+                
+                # 查找签到信息列表
+                info_list = sign_info_div.find('div', class_='bm_c').find_all('li')
+                
+                # 解析签到信息
+                sign_info = {}
+                for item in info_list:
+                    text = item.get_text(strip=True)
+                    if '：' in text:
+                        key, value = text.split('：', 1)
+                        sign_info[key] = value
+                
+                return sign_info
+            except Exception as e:
+                logger.error(f"获取签到信息失败: {e}，重试({retry+1}/{Config.MAX_RETRIES})")
+                if retry < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
                 return {}
-            
-            # 查找签到信息列表
-            info_list = sign_info_div.find('div', class_='bm_c').find_all('li')
-            
-            # 解析签到信息
-            sign_info = {}
-            for item in info_list:
-                text = item.get_text(strip=True)
-                if '：' in text:
-                    key, value = text.split('：', 1)
-                    sign_info[key] = value
-            
-            return sign_info
-        except Exception as e:
-            logger.error(f"获取签到信息失败: {e}")
-            return {}
+        
+        logger.error(f"获取签到信息失败，已达到最大重试次数({Config.MAX_RETRIES})")
+        return {}
     
     def run(self):
-        """运行签到流程"""
+        """运行签到流程，带重试机制"""
         logger.info("===== 开始运行签到脚本 =====")
         
         # 检查登录状态
@@ -450,7 +608,24 @@ class FNSignIn:
 
 if __name__ == "__main__":
     try:
+        # 设置更详细的日志级别，便于调试
+        if os.environ.get('DEBUG') == '1':
+            logger.setLevel(logging.DEBUG)
+            logger.debug("调试模式已启用")
+        
+        # 创建签到实例并运行
         sign = FNSignIn()
-        sign.run()
+        result = sign.run()
+        
+        # 输出最终结果
+        if result:
+            logger.info("===== 签到脚本执行成功 =====")
+        else:
+            logger.error("===== 签到脚本执行失败 =====")
+    except KeyboardInterrupt:
+        logger.info("脚本被用户中断")
     except Exception as e:
         logger.error(f"脚本运行出错: {e}")
+        # 输出详细的异常堆栈信息
+        import traceback
+        logger.error(traceback.format_exc())
