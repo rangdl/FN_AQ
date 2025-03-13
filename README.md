@@ -28,8 +28,12 @@ pip install requests beautifulsoup4
 1. 确保已安装所需依赖
 2. 修改脚本中的账号密码（32-33行代码）
 3. 运行脚本
-4. 如提示需要验证码，可多次登陆试下
+4. 如提示需要验证码，可多次登陆试下(尝试添加了识别API，)
    (确定账号密码没有错误时，常用IP会跳过验证码)
+
+注册地址：https://share.acedata.cloud/r/1uKi7kVhwW
+
+识别项目地址：https://platform.acedata.cloud/documents/cd1f56dc-e9c9-4293-9c68-80fa560c9087
 
 ```bash
 python fnclub_signer.py
@@ -52,6 +56,10 @@ class Config:
     
     # Cookie文件路径
     COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json')
+    
+    # 验证码识别API
+    CAPTCHA_API_URL = "https://api.acedata.cloud/captcha/recognition/image2text"
+    CAPTCHA_API_KEY = "Bearer your_api_key"  # 替换为你的API密钥
 ```
 
 ## 日志说明
@@ -73,9 +81,10 @@ crontab -e
 ## 注意事项
 
 1. 请勿频繁运行脚本，以免对网站造成不必要的压力
-2. 如遇到验证码，脚本会提示需要手动登录，此时请手动登录网站一次
+2. 如遇到验证码，脚本会自动尝试识别验证码并登录
 3. 首次运行时会创建Cookie文件，之后会优先使用Cookie登录
 4. 如Cookie失效，脚本会自动尝试使用账号密码重新登录
+5. 验证码识别功能需要配置有效的API密钥才能使用
 
 ## 免责声明
 
@@ -102,3 +111,25 @@ crontab -e
 - 添加了验证码检测功能
 - 完善了错误日志记录
 - 优化了异常情况的处理流程
+
+### 验证码识别功能
+- 在Config类中添加了CAPTCHA_API_URL和CAPTCHA_API_KEY配置项
+- 实现了recognize_captcha方法，用于下载验证码图片、转换为Base64编码并调用API识别
+- 该方法会返回识别出的验证码文本或在失败时返回None
+
+### 登录流程优化
+- 修改了login方法，增加了验证码检测和处理逻辑
+- 当检测到需要验证码时，会自动获取验证码图片URL
+- 调用recognize_captcha方法识别验证码
+- 将识别结果添加到登录表单数据中
+- 增加了验证码错误的检测和处理
+
+### 登录状态检测改进
+- 优化了check_login_status函数，使用多种方法综合判断登录状态
+- 检查登录链接是否存在
+- 检查页面中是否包含用户名
+- 检查是否有个人中心链接
+
+### Cookie管理优化
+- 更新了save_cookies函数，保存完整的Cookie信息，包括域名、路径、过期时间等
+- 优化了load_cookies函数，使其能够处理新旧两种格式的Cookie文件，确保向后兼容性
