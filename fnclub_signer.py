@@ -7,6 +7,7 @@ import json
 import time
 import logging
 import requests
+import base64
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -29,8 +30,8 @@ logger = logging.getLogger(__name__)
 # 配置信息
 class Config:
     # 账号信息
-    USERNAME = 'your_username'
-    PASSWORD = 'your_password'
+    USERNAME = 'kggzs'
+    PASSWORD = 'Wk1724464998'
     
     # 网站URL
     BASE_URL = 'https://club.fnnas.com/'
@@ -39,7 +40,11 @@ class Config:
     
     # Cookie文件路径
     COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.json')
-
+    
+    # 验证码识别API
+    CAPTCHA_API_URL = "https://api.acedata.cloud/captcha/recognition/image2text"
+    CAPTCHA_API_KEY = "Bearer your_api_key"
+    # API注册地址：https://share.acedata.cloud/r/1uKi7kVhwW
 
 class FNSignIn:
     def __init__(self):
@@ -56,8 +61,22 @@ class FNSignIn:
         if os.path.exists(Config.COOKIE_FILE):
             try:
                 with open(Config.COOKIE_FILE, 'r') as f:
-                    cookies = json.load(f)
-                    self.session.cookies.update(cookies)
+                    cookies_list = json.load(f)
+                    
+                    # 检查是否为新格式的Cookie列表
+                    if isinstance(cookies_list, list) and len(cookies_list) > 0 and 'name' in cookies_list[0]:
+                        # 新格式：包含完整Cookie属性的列表
+                        for cookie_dict in cookies_list:
+                            self.session.cookies.set(
+                                cookie_dict['name'],
+                                cookie_dict['value'],
+                                domain=cookie_dict.get('domain'),
+                                path=cookie_dict.get('path')
+                            )
+                    else:
+                        # 旧格式：简单的名称-值字典
+                        self.session.cookies.update(cookies_list)
+                        
                 logger.info("已从文件加载Cookie")
                 return True
             except Exception as e:
@@ -67,13 +86,21 @@ class FNSignIn:
     def save_cookies(self):
         """保存Cookie到文件"""
         try:
-            # 处理同名Cookie问题，创建一个新的字典，对于同名Cookie只保留最后一个
-            cookies_dict = {}
+            # 保存完整的Cookie信息，包括域名、路径等属性
+            cookies_list = []
             for cookie in self.session.cookies:
-                cookies_dict[cookie.name] = cookie.value
+                cookie_dict = {
+                    'name': cookie.name,
+                    'value': cookie.value,
+                    'domain': cookie.domain,
+                    'path': cookie.path,
+                    'expires': cookie.expires,
+                    'secure': cookie.secure
+                }
+                cookies_list.append(cookie_dict)
             
             with open(Config.COOKIE_FILE, 'w') as f:
-                json.dump(cookies_dict, f)
+                json.dump(cookies_list, f)
             logger.info("Cookie已保存到文件")
             return True
         except Exception as e:
@@ -86,8 +113,20 @@ class FNSignIn:
             response = self.session.get(Config.BASE_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 检查是否有登录用户名显示
-            if soup.select('.vwmy'):
+            # 检查是否存在登录链接，如果存在则表示未登录
+            login_links = soup.select('a[href*="member.php?mod=logging&action=login"]')
+            
+            # 检查页面内容是否包含用户名
+            username_in_page = Config.USERNAME in response.text
+            
+            # 检查是否有个人中心链接
+            user_center_links = soup.select('a[href*="home.php?mod=space"]')
+            
+            # 输出详细的登录状态检测信息
+            logger.debug(f"登录状态检测: 登录链接数量={len(login_links)}, 用户名在页面中={username_in_page}, 个人中心链接数量={len(user_center_links)}")
+            
+            # 如果没有登录链接或者页面中包含用户名，则认为已登录
+            if (len(login_links) == 0 or username_in_page) and len(user_center_links) > 0:
                 logger.info("Cookie有效，已登录状态")
                 return True
             else:
@@ -97,17 +136,53 @@ class FNSignIn:
             logger.error(f"检查登录状态失败: {e}")
             return False
     
+    def recognize_captcha(self, captcha_url):
+        """识别验证码"""
+        try:
+            # 下载验证码图片
+            captcha_response = self.session.get(captcha_url)
+            if captcha_response.status_code != 200:
+                logger.error(f"下载验证码图片失败，状态码: {captcha_response.status_code}")
+                return None
+            
+            # 将图片转换为Base64编码
+            captcha_base64 = base64.b64encode(captcha_response.content).decode('utf-8')
+            
+            # 调用验证码识别API
+            headers = {
+                "accept": "application/json",
+                "authorization": Config.CAPTCHA_API_KEY,
+                "content-type": "application/json"
+            }
+            
+            payload = {
+                "image": captcha_base64
+            }
+            
+            api_response = requests.post(Config.CAPTCHA_API_URL, json=payload, headers=headers)
+            
+            if api_response.status_code != 200:
+                logger.error(f"验证码识别API请求失败，状态码: {api_response.status_code}")
+                return None
+            
+            # 解析API响应
+            result = api_response.json()
+            if 'text' in result:
+                logger.info(f"验证码识别成功: {result['text']}")
+                return result['text']
+            else:
+                logger.error(f"验证码识别API返回格式异常: {result}")
+                return None
+        except Exception as e:
+            logger.error(f"验证码识别过程发生错误: {e}")
+            return None
+    
     def login(self):
         """使用账号密码登录"""
         try:
             # 获取登录页面
             response = self.session.get(Config.LOGIN_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 检查是否需要验证码
-            if 'seccodeverify' in response.text:
-                logger.error("登录需要验证码，请手动登录后再运行脚本")
-                return False
             
             # 获取登录表单信息
             login_form = None
@@ -181,6 +256,33 @@ class FNSignIn:
             if password_id:
                 login_data[password_id] = Config.PASSWORD
             
+            # 检查是否需要验证码
+            seccodeverify = soup.find('input', {'name': 'seccodeverify'})
+            if seccodeverify:
+                logger.info("检测到需要验证码，尝试自动识别验证码")
+                
+                # 获取验证码ID
+                seccode_id = seccodeverify.get('id', '').replace('seccodeverify_', '')
+                
+                # 获取验证码图片URL
+                captcha_img = soup.find('img', {'src': re.compile(r'misc\.php\?mod=seccode')})
+                if not captcha_img:
+                    logger.error("未找到验证码图片")
+                    return False
+                
+                captcha_url = Config.BASE_URL + captcha_img['src']
+                logger.info(f"验证码图片URL: {captcha_url}")
+                
+                # 识别验证码
+                captcha_text = self.recognize_captcha(captcha_url)
+                if not captcha_text:
+                    logger.error("验证码识别失败")
+                    return False
+                
+                # 添加验证码到登录数据
+                login_data['seccodeverify'] = captcha_text
+                login_data['seccodehash'] = seccode_id
+            
             # 更新请求头，模拟真实浏览器
             self.session.headers.update({
                 'Origin': Config.BASE_URL.rstrip('/'),
@@ -196,8 +298,8 @@ class FNSignIn:
             login_response = self.session.post(login_url, data=login_data, allow_redirects=True)
             
             # 检查登录结果
-            if '验证码' in login_response.text:
-                logger.error("登录需要验证码，请手动登录后再运行脚本")
+            if '验证码' in login_response.text and '验证码错误' in login_response.text:
+                logger.error("验证码错误，登录失败")
                 return False
             
             # 检查登录是否成功
