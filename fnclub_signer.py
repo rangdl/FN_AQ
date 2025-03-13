@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 # 配置信息
 class Config:
     # 账号信息
-    USERNAME = 'kggzs'
-    PASSWORD = 'Wk1724464998'
+    USERNAME = 'your_username'  # 修改为你的用户名
+    PASSWORD = 'your_password'  # 修改为你的密码
     
     # 网站URL
     BASE_URL = 'https://club.fnnas.com/'
@@ -43,7 +43,7 @@ class Config:
     
     # 验证码识别API
     CAPTCHA_API_URL = "https://api.acedata.cloud/captcha/recognition/image2text"
-    CAPTCHA_API_KEY = "Bearer your_api_key"
+    CAPTCHA_API_KEY = "Bearer your_api_key"  # 替换为你的API密钥
     # API注册地址：https://share.acedata.cloud/r/1uKi7kVhwW
 
 class FNSignIn:
