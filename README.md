@@ -169,3 +169,5 @@ crontab -e
 ### Cookie管理优化
 - 更新了save_cookies函数，保存完整的Cookie信息，包括域名、路径、过期时间等
 - 优化了load_cookies函数，使其能够处理新旧两种格式的Cookie文件，确保向后兼容性
+
+[![Star History Chart](https://api.star-history.com/svg?repos=kggzs/FN_AQ&type=Date)](https://www.star-history.com/#kggzs/FN_AQ&Date)
