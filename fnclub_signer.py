@@ -28,11 +28,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
 # 配置信息
 class Config:
     # 账号信息
-    USERNAME = 'your_username'  # 修改为你的用户名
-    PASSWORD = 'your_password'  # 修改为你的密码
+    USERNAME = os.getenv('FN_USERNAME', '')  # 修改为你的用户名
+    PASSWORD = os.getenv('FN_PASSWORD', '')  # 修改为你的密码
     
     # 网站URL
     BASE_URL = 'https://club.fnnas.com/'
@@ -44,8 +45,8 @@ class Config:
     
     # 验证码识别API (百度OCR API)
     CAPTCHA_API_URL = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
-    API_KEY = "your_api_key"  # 替换为你的百度OCR API Key
-    SECRET_KEY = "your_secret_key"  # 替换为你的百度OCR Secret Key
+    API_KEY = os.getenv('FN_BD_API_KEY', '')  # 替换为你的百度OCR API Key
+    SECRET_KEY = os.getenv('FN_BD_SECRET_KEY', '')  # 替换为你的百度OCR Secret Key
     
     # 重试设置
     MAX_RETRIES = 3  # 最大重试次数
@@ -53,6 +54,8 @@ class Config:
     
     # Token缓存文件
     TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token_cache.json')
+
+    PUSH_KEY = os.getenv('FN_PUSH_KEY', '')
 
 class FNSignIn:
     def __init__(self):
@@ -143,7 +146,7 @@ class FNSignIn:
         except Exception as e:
             logger.error(f"检查登录状态失败: {e}")
             return False
-    
+
     def get_access_token(self):
         """获取百度API的access_token，带缓存功能"""
         try:
@@ -588,28 +591,57 @@ class FNSignIn:
         if sign_text == "点击打卡":
             logger.info("开始执行签到...")
             if self.do_sign(sign_param):
-                # 获取并记录签到信息
-                sign_info = self.get_sign_info()
-                if sign_info:
-                    logger.info("===== 签到信息 =====")
-                    for key, value in sign_info.items():
-                        logger.info(f"{key}: {value}")
                 return True
             else:
                 logger.error("签到失败")
                 return False
         elif sign_text == "今日已打卡":
             logger.info("今日已签到，无需重复签到")
-            # 获取并记录签到信息
-            sign_info = self.get_sign_info()
-            if sign_info:
-                logger.info("===== 签到信息 =====")
-                for key, value in sign_info.items():
-                    logger.info(f"{key}: {value}")
             return True
         else:
             logger.warning(f"未知的签到状态: {sign_text}，签到流程终止")
             return False
+
+    def push_run(self):
+        run_result = self.run()
+
+        # 输出最终结果
+        if run_result:
+            message_arr = []
+            # 获取并记录签到信息
+            sign_info = sign.get_sign_info()
+            if sign_info:
+                logger.info("===== 签到信息 =====")
+                for key, value in sign_info.items():
+                    message_arr.append(f"{key}: {value}")
+                    logger.info(f"{key}: {value}")
+                self.push_message('飞牛签到成功', '\n'.join(message_arr))
+        return run_result
+
+    def push_message(self, title: str, content: str):
+        """
+        Server酱消息推送
+        文档：https://sct.ftqq.com/
+        """
+        if not Config.PUSH_KEY:
+            print('⚠️ 未配置Server酱密钥，跳过推送')
+            return
+
+        # 构建推送请求
+        api_url = f'https://sctapi.ftqq.com/{Config.PUSH_KEY}.send'
+        payload = {
+            'title': title,
+            'desp': content.replace('\n', '\n\n')  # Server酱要求空行用两个换行
+        }
+
+        try:
+            resp = requests.post(api_url, data=payload)
+            if resp.json().get('code') == 0:
+                print('📤 推送成功')
+            else:
+                print(f'推送失败：{resp.text}')
+        except Exception as e:
+            print(f'🚨 推送异常：{str(e)}')
 
 
 if __name__ == "__main__":
@@ -618,11 +650,16 @@ if __name__ == "__main__":
         if os.environ.get('DEBUG') == '1':
             logger.setLevel(logging.DEBUG)
             logger.debug("调试模式已启用")
-        
-        # 创建签到实例并运行
+
+        print(Config.USERNAME)
+        print(Config.PASSWORD)
+        print(Config.API_KEY)
+        print(Config.SECRET_KEY)
+        print(Config.PUSH_KEY)
+        # # 创建签到实例并运行
         sign = FNSignIn()
-        result = sign.run()
-        
+        result = sign.push_run()
+
         # 输出最终结果
         if result:
             logger.info("===== 签到脚本执行成功 =====")
