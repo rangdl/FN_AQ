@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+"""
+name: 飞牛论坛签到
+cron: 5 0 * * *
+"""
 import os
 import re
 import json
