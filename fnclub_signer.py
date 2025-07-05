@@ -14,6 +14,7 @@ import base64
 import urllib.parse
 from bs4 import BeautifulSoup
 from datetime import datetime
+from notify import send
 
 # 配置日志
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -58,7 +59,7 @@ class Config:
     # Token缓存文件
     TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token_cache.json')
 
-    PUSH_KEY = os.getenv('FN_PUSH_KEY', '')
+    PUSH_KEY = os.getenv('PUSH_KEY', '')
 
 class FNSignIn:
     def __init__(self):
@@ -618,33 +619,8 @@ class FNSignIn:
                 for key, value in sign_info.items():
                     message_arr.append(f"{key}: {value}")
                     logger.info(f"{key}: {value}")
-                self.push_message('飞牛签到成功', '\n'.join(message_arr))
+                send('飞牛签到成功', '\n'.join(message_arr))
         return run_result
-
-    def push_message(self, title: str, content: str):
-        """
-        Server酱消息推送
-        文档：https://sct.ftqq.com/
-        """
-        if not Config.PUSH_KEY:
-            print('⚠️ 未配置Server酱密钥，跳过推送')
-            return
-
-        # 构建推送请求
-        api_url = f'https://sctapi.ftqq.com/{Config.PUSH_KEY}.send'
-        payload = {
-            'title': title,
-            'desp': content.replace('\n', '\n\n')  # Server酱要求空行用两个换行
-        }
-
-        try:
-            resp = requests.post(api_url, data=payload)
-            if resp.json().get('code') == 0:
-                print('📤 推送成功')
-            else:
-                print(f'推送失败：{resp.text}')
-        except Exception as e:
-            print(f'🚨 推送异常：{str(e)}')
 
 
 if __name__ == "__main__":
@@ -654,11 +630,6 @@ if __name__ == "__main__":
             logger.setLevel(logging.DEBUG)
             logger.debug("调试模式已启用")
 
-        print(Config.USERNAME)
-        print(Config.PASSWORD)
-        print(Config.API_KEY)
-        print(Config.SECRET_KEY)
-        print(Config.PUSH_KEY)
         # # 创建签到实例并运行
         sign = FNSignIn()
         result = sign.push_run()
