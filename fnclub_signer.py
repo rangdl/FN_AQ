@@ -59,7 +59,6 @@ class Config:
     # Token缓存文件
     TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'token_cache.json')
 
-    PUSH_KEY = os.getenv('PUSH_KEY', '')
 
 class FNSignIn:
     def __init__(self):
